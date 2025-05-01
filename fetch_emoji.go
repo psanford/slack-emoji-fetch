@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"net/http/cookiejar"
@@ -25,6 +24,7 @@ import (
 var apiToken = flag.String("api-token", "", "API token xox*")
 var cookie = flag.String("cookie", "", "Cookie (only for session tokens)")
 var fetchFiles = flag.Bool("fetch-images", false, "Fetch images (default is just to fetch metadata)")
+var userAgent = flag.String("user-agent", "", "User agent")
 
 func main() {
 	flag.Parse()
@@ -54,6 +54,14 @@ func main() {
 		client := http.Client{
 			Jar: jar,
 		}
+
+		if *userAgent != "" {
+			transport := &userAgentTransport{
+				userAgent: *userAgent,
+				transport: &http.Transport{},
+			}
+			client.Transport = transport
+		}
 		options = append(options, slack.OptionHTTPClient(&client))
 	}
 
@@ -66,7 +74,8 @@ func main() {
 
 	w := csv.NewWriter(os.Stdout)
 
-	w.Write([]string{"name", "url"})
+	header := []string{"name", "url"}
+	w.Write(header)
 
 	for k, v := range emojis {
 		w.Write([]string{k, v})
@@ -82,14 +91,27 @@ func main() {
 
 	limiter := rate.NewLimiter(rate.Every(110*time.Millisecond), 5)
 
-	dir, err := ioutil.TempDir("", "fetch-emoji")
+	dir, err := os.MkdirTemp("", "fetch-emoji")
 	if err != nil {
 		log.Fatalf("make temp dir err: %s", err)
 	}
 	if *fetchFiles {
 		for k, v := range emojis {
 			if strings.HasPrefix(v, "https://") {
-				resp, err := http.Get(v)
+				var httpClient *http.Client
+				if *userAgent != "" {
+					transport := &userAgentTransport{
+						userAgent: *userAgent,
+						transport: http.DefaultTransport,
+					}
+					httpClient = &http.Client{
+						Transport: transport,
+					}
+				} else {
+					httpClient = http.DefaultClient
+				}
+
+				resp, err := httpClient.Get(v)
 				if err != nil {
 					log.Printf("fetch emoji %s %s err: %s", k, v, err)
 					continue
@@ -120,4 +142,17 @@ func main() {
 			}
 		}
 	}
+}
+
+type userAgentTransport struct {
+	userAgent string
+	transport http.RoundTripper
+}
+
+func (t *userAgentTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Header == nil {
+		req.Header = make(http.Header)
+	}
+	req.Header.Set("User-Agent", t.userAgent)
+	return t.transport.RoundTrip(req)
 }
